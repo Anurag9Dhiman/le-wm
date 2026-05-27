@@ -3,23 +3,39 @@ import torch
 from stable_pretraining import data as dt
 from lightning.pytorch.callbacks import Callback
 
+class _ReshapePixels:
+    """Reshape flat uint8 pixels [T, C*H*W] → [T, C, H, W] before image transforms."""
+    def __init__(self, source: str, target: str, c: int = 3, h: int = 224, w: int = 224):
+        self.source, self.target, self.c, self.h, self.w = source, target, c, h, w
+
+    def __call__(self, x):
+        px = x[self.source]
+        if px.ndim == 2:  # [T, C*H*W]
+            px = px.reshape(px.shape[0], self.c, self.h, self.w)
+        x[self.target] = px
+        return x
+
+
 def get_img_preprocessor(source: str, target: str, img_size: int = 224):
     imagenet_stats = dt.dataset_stats.ImageNet
+    reshape = _ReshapePixels(source=source, target=target, c=3, h=img_size, w=img_size)
     to_image = dt.transforms.ToImage(**imagenet_stats, source=source, target=target)
-    resize = dt.transforms.Resize(img_size, source=source, target=target)
-    return dt.transforms.Compose(to_image, resize)
+    return dt.transforms.Compose(reshape, to_image)
 
 
 class ZScoreNormalizer:
-    """Picklable z-score normalizer — uses a class instead of a closure so it
-    survives pickle when DataLoader workers are spawned (required by LanceDataset)."""
+    """Picklable z-score normalizer — stores mean/std as numpy to survive
+    multiprocessing pickle on MPS devices (tensor sharing is CPU-only)."""
 
     def __init__(self, mean, std):
-        self.mean = mean
-        self.std = std
+        self.mean = mean.cpu().numpy()
+        self.std = std.cpu().numpy()
 
     def __call__(self, x):
-        return ((x - self.mean) / self.std).float()
+        import numpy as np
+        m = torch.from_numpy(self.mean)
+        s = torch.from_numpy(self.std)
+        return ((x - m) / s).float()
 
 
 def get_column_normalizer(dataset, source: str, target: str):

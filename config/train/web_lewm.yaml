@@ -1,0 +1,42 @@
+defaults:
+  - _self_
+  - launcher: local
+  - data: web
+  - model: web_lewm
+
+output_model_name: web_lewm
+subdir: ${hydra:job.id}
+
+num_workers: 4
+train_split: 0.9
+seed: 3072
+img_size: 224
+embed_dim: 384        # DINOv2-small CLS dim; also the projected embedding dim
+history_size: 5       # context frames fed to ARPredictor
+num_preds: 1          # predict 1 step ahead
+
+trainer:
+  max_epochs: 3
+  devices: auto
+  accelerator: gpu
+  precision: bf16
+  gradient_clip_val: 1.0
+
+loader:
+  batch_size: 16
+  num_workers: ${num_workers}
+  persistent_workers: false
+  prefetch_factor: 3
+  pin_memory: true
+
+optimizer:
+  type: AdamW
+  lr: 3e-4
+  weight_decay: 1e-3
+
+loss:
+  sigreg:
+    weight: 0.09
+    kwargs:
+      knots: 17
+      num_proj: 1024

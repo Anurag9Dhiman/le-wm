@@ -214,6 +214,45 @@ class Embedder(nn.Module):
         return x
 
 
+class WebActionEncoder(nn.Module):
+    """Encode web action vectors into embedding space.
+
+    Input action vector layout (see data/web_action.py):
+      [0]      action_type_id   int in [0, num_action_types)
+      [1]      x_norm           float in [0, 1]
+      [2]      y_norm           float in [0, 1]
+      [3]      scroll_x         float
+      [4]      scroll_y         float
+      [5..19]  text_chars       float in [0, 1], zero-padded
+    """
+
+    def __init__(self, emb_dim: int, num_action_types: int = 8, max_text_len: int = 15, input_dim=None):
+        super().__init__()
+        self.max_text_len = max_text_len
+        d = emb_dim // 4
+        self.type_emb   = nn.Embedding(num_action_types, d)
+        self.coord_proj = nn.Linear(2, d)
+        self.scroll_proj = nn.Linear(2, d)
+        self.text_proj  = nn.Linear(max_text_len, d)
+        self.fusion = nn.Sequential(nn.Linear(4 * d, emb_dim), nn.SiLU())
+
+    def forward(self, action: torch.Tensor) -> torch.Tensor:
+        """
+        action: (B, T, 5 + max_text_len)
+        returns: (B, T, emb_dim)
+        """
+        type_id = action[..., 0].long().clamp(0, self.type_emb.num_embeddings - 1)
+        coords  = action[..., 1:3].float()
+        scroll  = action[..., 3:5].float()
+        text    = action[..., 5:5 + self.max_text_len].float()
+
+        t  = self.type_emb(type_id)
+        c  = self.coord_proj(coords)
+        s  = self.scroll_proj(scroll)
+        tx = self.text_proj(text)
+        return self.fusion(torch.cat([t, c, s, tx], dim=-1))
+
+
 class MLP(nn.Module):
     """Simple MLP with optional normalization and activation"""
 

@@ -13,6 +13,35 @@ from omegaconf import OmegaConf, open_dict
 from module import SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 
+# MPS tensors can't use file-based shared memory (used by spawn workers).
+# If a model parameter ends up in the pickle chain for worker args, convert it
+# to CPU storage for transport — workers only load data and don't use the model.
+def _patch_mps_sharing():
+    import torch.storage as _ts
+    _orig = _ts.UntypedStorage._share_filename_cpu_
+    def _mps_safe(self, *args, **kwargs):
+        if self.device.type == 'mps':
+            return self.cpu()._share_filename_cpu_(*args, **kwargs)
+        return _orig(self, *args, **kwargs)
+    _ts.UntypedStorage._share_filename_cpu_ = _mps_safe
+
+_patch_mps_sharing()
+
+
+# spt.data.Subset inherits set_pl_trainer from Dataset (stores the full Lightning
+# trainer on self._trainer) but has no __getstate__, so the trainer gets pickled
+# when spawn workers copy the dataset — dragging in the MPS model and the
+# functools.partial-based forward method.  Exclude _trainer from the pickle state.
+def _patch_subset_pickling():
+    from stable_pretraining.data.datasets import Subset as _Subset
+    def _getstate(self):
+        state = self.__dict__.copy()
+        state['_trainer'] = None
+        return state
+    _Subset.__getstate__ = _getstate
+
+_patch_subset_pickling()
+
 
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
@@ -75,7 +104,7 @@ def run(cfg):
         dataset, lengths=[cfg.train_split, 1 - cfg.train_split], generator=rnd_gen
     )
 
-    train = torch.utils.data.DataLoader(train_set, **cfg.loader,shuffle=True, drop_last=True, generator=rnd_gen)
+    train = torch.utils.data.DataLoader(train_set, **cfg.loader, shuffle=True, drop_last=True, generator=rnd_gen)
     val = torch.utils.data.DataLoader(val_set, **cfg.loader, shuffle=False, drop_last=False)
     
     ##############################
@@ -84,12 +113,21 @@ def run(cfg):
 
     world_model = hydra.utils.instantiate(cfg.model)
 
+    import math
+    steps_per_epoch = math.ceil(len(train_set) / cfg.loader.batch_size)
+    max_steps = steps_per_epoch * cfg.trainer.max_epochs
+    warmup_steps = max(1, int(0.05 * max_steps))
+
     optimizers = {
         'model_opt': {
             "modules": 'model',
             "optimizer": dict(cfg.optimizer),
-            "scheduler": {"type": "LinearWarmupCosineAnnealingLR"},
-            "interval": "epoch",
+            "scheduler": {
+                "type": "LinearWarmupCosineAnnealingLR",
+                "warmup_steps": warmup_steps,
+                "max_steps": max_steps,
+            },
+            "interval": "step",
         },
     }
 

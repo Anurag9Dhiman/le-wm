@@ -1,0 +1,8 @@
+dataset:
+  num_steps: ${eval:'${num_preds} + ${history_size}'}
+  frameskip: 1
+  name: openapps_all.lance
+  keys_to_load:
+    - pixels
+    - action
+  keys_to_cache: []

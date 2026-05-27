@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv*/
+.venv/
+env/
+
+# Training outputs
+lightning_logs/
+outputs/
+wandb/
+
+# Datasets (too large for git — upload separately)
+datasets/
+
+# Debug / scratch files
+environment*.json
+requirements_frozen*.txt
+
+# Hydra
+.hydra/
+
+# OS
+.DS_Store

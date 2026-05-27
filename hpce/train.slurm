@@ -22,10 +22,9 @@
 MAX_EPOCHS=100
 BATCH_SIZE=128        # A100 can handle 128; drop to 64 for V100
 
-SCRATCH="/scratch/$USER"
+export SCRATCH="/scratch/$USER"
 REPO_DIR="$SCRATCH/le-wm"
-SPT_DIR="$SCRATCH/stable-pretraining"
-VENV="$SCRATCH/lewm-env"
+CONDA_ENV="$SCRATCH/lewm-conda"
 DATASET_DIR="$SCRATCH/datasets"
 
 mkdir -p "$SCRATCH/logs"
@@ -37,14 +36,12 @@ echo "Batch    : $BATCH_SIZE"
 echo "Started  : $(date)"
 
 # ── Load modules ──────────────────────────────────────────────────────────────
-module load python/3.12   2>/dev/null || module load python3/3.12 2>/dev/null || \
-module load python/3.11   2>/dev/null || module load python3/3.11 2>/dev/null || true
-module load cuda/12.1     2>/dev/null || module load cuda/11.8    2>/dev/null || true
+module load cuda/12.1 2>/dev/null || module load cuda/11.8 2>/dev/null || true
 
-source "$VENV/bin/activate"
+source /home/apps/miniconda3/etc/profile.d/conda.sh
+conda activate "$CONDA_ENV"
 
 export LOCAL_DATASET_DIR="$DATASET_DIR"
-export MUJOCO_GL="egl"
 export HYDRA_FULL_ERROR=1
 export WANDB_DISABLED=true    # set to false and add WANDB_API_KEY to use W&B
 
@@ -54,7 +51,7 @@ cd "$REPO_DIR"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 # ── Patch config: epochs, batch size, workers ─────────────────────────────────
-python3 - <<PYEOF
+python - <<PYEOF
 import yaml
 from pathlib import Path
 
@@ -78,12 +75,12 @@ PYEOF
 
 # ── Train ─────────────────────────────────────────────────────────────────────
 echo "Starting training..."
-python3 train.py \
+python train.py \
     --config-name web_lewm \
     "hydra.run.dir=$SCRATCH/hydra_outputs/\${now:%Y-%m-%d}/\${now:%H-%M-%S}"
 
 # ── Copy checkpoint to named location ────────────────────────────────────────
-python3 - <<PYEOF
+python - <<PYEOF
 import shutil
 from pathlib import Path
 import stable_worldmodel as swm

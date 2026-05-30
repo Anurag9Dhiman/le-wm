@@ -1,7 +1,48 @@
+import math
 import torch
 from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
+
+
+class VISReg(nn.Module):
+    """Variance-Isotropic-Shape Regularizer.
+    Prevents embedding collapse via three explicit terms: zero-mean centering,
+    unit-variance scaling, and Gaussian shape matching via sorted random projections.
+    Use as an alternative to SIGReg (not together).
+    """
+
+    def __init__(self, num_projections: int = 256):
+        super().__init__()
+        self.K = num_projections
+        self._cached_B = -1
+        self._cached_target = None
+
+    def _get_target(self, B: int, device, dtype) -> torch.Tensor:
+        if self._cached_B != B:
+            q = torch.linspace(1, B, B, device=device, dtype=torch.float32) / (B + 1)
+            self._cached_target = torch.erfinv(2 * q - 1).mul_(math.sqrt(2))
+            self._cached_B = B
+        return self._cached_target.to(device=device, dtype=dtype)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        # z: (T, B, D)
+        _, B, D = z.shape
+
+        mu = z.mean(dim=1, keepdim=True)
+        center_loss = mu.pow(2).mean()
+
+        z_centered = z - mu
+        std = z_centered.norm(dim=1).div(math.sqrt(B)) + 1e-6
+        scale_loss = (std - 1.0).pow(2).mean()
+
+        z_norm = z_centered / std.detach().unsqueeze(1)
+        W = F.normalize(torch.randn(D, self.K, device=z.device, dtype=z.dtype), dim=0)
+        p_sorted = (z_norm @ W).sort(dim=1).values
+        target = self._get_target(B, z.device, z.dtype).view(1, B, 1)
+        shape_loss = (p_sorted - target).pow(2).mean()
+
+        return scale_loss + shape_loss + center_loss
 
 def modulate(x, shift, scale):
     """AdaLN-zero modulation"""
@@ -218,7 +259,7 @@ class WebActionEncoder(nn.Module):
     """Encode web action vectors into embedding space.
 
     Input action vector layout (see data/web_action.py):
-      [0]      action_type_id   int in [0, num_action_types)
+      [0]      action_type_id   int in [0, num_action_types)  # 0=noop,1=click,2=type,3=scroll,4=navigate,5=hover,6=drag,7=key_press
       [1]      x_norm           float in [0, 1]
       [2]      y_norm           float in [0, 1]
       [3]      scroll_x         float

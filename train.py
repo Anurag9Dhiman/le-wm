@@ -10,28 +10,29 @@ import torch
 from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf, open_dict
 
-from module import SIGReg
+from module import SIGReg, VISReg
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
+from data.lance_dataset import LanceDataset
 
-# MPS tensors can't use file-based shared memory (used by spawn workers).
-# If a model parameter ends up in the pickle chain for worker args, convert it
-# to CPU storage for transport — workers only load data and don't use the model.
-def _patch_mps_sharing():
+# UntypedStorage._share_filename_cpu_ is called when spawn workers try to
+# share tensors via file-backed memory. This patch is a no-op on CUDA/CPU
+# but prevents errors if non-CPU tensors end up in the pickle chain.
+def _patch_storage_sharing():
     import torch.storage as _ts
     _orig = _ts.UntypedStorage._share_filename_cpu_
-    def _mps_safe(self, *args, **kwargs):
-        if self.device.type == 'mps':
+    def _safe(self, *args, **kwargs):
+        if self.device.type not in ('cpu', 'cuda'):
             return self.cpu()._share_filename_cpu_(*args, **kwargs)
         return _orig(self, *args, **kwargs)
-    _ts.UntypedStorage._share_filename_cpu_ = _mps_safe
+    _ts.UntypedStorage._share_filename_cpu_ = _safe
 
-_patch_mps_sharing()
+_patch_storage_sharing()
 
 
-# spt.data.Subset inherits set_pl_trainer from Dataset (stores the full Lightning
-# trainer on self._trainer) but has no __getstate__, so the trainer gets pickled
-# when spawn workers copy the dataset — dragging in the MPS model and the
-# functools.partial-based forward method.  Exclude _trainer from the pickle state.
+# spt.data.Subset stores the full Lightning trainer on self._trainer via
+# set_pl_trainer, but has no __getstate__, so the trainer gets pickled when
+# spawn workers copy the dataset. Exclude _trainer from pickle state to avoid
+# dragging the entire model into each worker process.
 def _patch_subset_pickling():
     from stable_pretraining.data.datasets import Subset as _Subset
     def _getstate(self):
@@ -48,7 +49,9 @@ def lejepa_forward(self, batch, stage, cfg):
 
     ctx_len = cfg.history_size
     n_preds = cfg.num_preds
-    lambd = cfg.loss.sigreg.weight
+    lambd_sig = cfg.loss.sigreg.weight
+    lambd_vis = (cfg.loss.visreg.weight
+                 if hasattr(cfg.loss, "visreg") else 0.0)
 
     # Replace NaN values with 0 (occurs at sequence boundaries)
     batch["action"] = torch.nan_to_num(batch["action"], 0.0)
@@ -65,9 +68,13 @@ def lejepa_forward(self, batch, stage, cfg):
     pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
 
     # LeWM loss
-    output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
-    output["sigreg_loss"]= self.sigreg(emb.transpose(0, 1))
-    output["loss"] = output["pred_loss"] + lambd * output["sigreg_loss"]  
+    emb_t = emb.transpose(0, 1)  # (T, B, D)
+    output["pred_loss"]   = (pred_emb - tgt_emb).pow(2).mean()
+    output["sigreg_loss"] = self.sigreg(emb_t)
+    output["visreg_loss"] = self.visreg(emb_t)
+    output["loss"] = (output["pred_loss"]
+                      + lambd_sig * output["sigreg_loss"]
+                      + lambd_vis * output["visreg_loss"])  
 
     losses_dict = {f"{stage}/{k}": v.detach() for k, v in output.items() if "loss" in k}
     self.log_dict(losses_dict, on_step=True, sync_dist=True)
@@ -82,9 +89,14 @@ def run(cfg):
     dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
     dataset_name = dataset_cfg.pop("name")
     cache_dir = os.environ.get("LOCAL_DATASET_DIR", None)
-    dataset = swm.data.load_dataset(
-        dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
-    )
+    if dataset_name.endswith(".lance"):
+        dataset = LanceDataset(
+            name=dataset_name, cache_dir=cache_dir, transform=None, **dataset_cfg
+        )
+    else:
+        dataset = swm.data.load_dataset(
+            dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
+        )
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
     
     with open_dict(cfg):
@@ -132,9 +144,12 @@ def run(cfg):
     }
 
     data_module = spt.data.DataModule(train=train, val=val)
+    vis_kwargs = (cfg.loss.visreg.kwargs
+                  if hasattr(cfg.loss, "visreg") else {"num_projections": 256})
     world_model = spt.Module(
         model = world_model,
         sigreg = SIGReg(**cfg.loss.sigreg.kwargs),
+        visreg = VISReg(**vis_kwargs),
         forward=partial(lejepa_forward, cfg=cfg),
         optim=optimizers,
     )
@@ -144,7 +159,7 @@ def run(cfg):
     ##########################
 
     run_id = cfg.get("subdir") or ""
-    run_dir = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), run_id)
+    run_dir = Path(swm.data.utils.get_cache_dir()) / 'checkpoints' / run_id
 
     logger = None
     if cfg.wandb.enabled:

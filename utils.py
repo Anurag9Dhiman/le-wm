@@ -1,3 +1,7 @@
+import json
+import os
+from pathlib import Path
+
 import numpy as np
 import torch
 from stable_pretraining import data as dt
@@ -24,8 +28,8 @@ def get_img_preprocessor(source: str, target: str, img_size: int = 224):
 
 
 class ZScoreNormalizer:
-    """Picklable z-score normalizer — stores mean/std as numpy to survive
-    multiprocessing pickle on MPS devices (tensor sharing is CPU-only)."""
+    """Picklable z-score normalizer — stores mean/std as numpy arrays so it
+    survives multiprocessing pickle when passed to DataLoader workers."""
 
     def __init__(self, mean, std):
         self.mean = mean.cpu().numpy()
@@ -48,7 +52,7 @@ def get_column_normalizer(dataset, source: str, target: str):
     return dt.transforms.WrapTorchTransform(ZScoreNormalizer(mean, std), source=source, target=target)
 
 class SaveCkptCallback(Callback):
-    """Callback to save model checkpoint after each epoch using save_pretrained."""
+    """Saves weights_latest.pt every epoch and weights_best.pt when val pred_loss improves."""
 
     def __init__(self, run_name, cfg, epoch_interval: int = 1):
         super().__init__()
@@ -60,17 +64,33 @@ class SaveCkptCallback(Callback):
         super().on_train_epoch_end(trainer, pl_module)
 
         if trainer.is_global_zero:
+            val_loss = trainer.callback_metrics.get("validate/pred_loss_epoch", None)
+            val_loss = float(val_loss) if val_loss is not None else None
+
             if (trainer.current_epoch + 1) % self.epoch_interval == 0:
-                self._save(pl_module.model, trainer.current_epoch + 1)
+                self._save(pl_module.model, trainer.current_epoch + 1, val_loss)
 
             if (trainer.current_epoch + 1) == trainer.max_epochs:
-                self._save(pl_module.model, trainer.current_epoch + 1)
+                self._save(pl_module.model, trainer.current_epoch + 1, val_loss)
 
-    def _save(self, model, epoch):
-        from stable_worldmodel.wm.utils import save_pretrained
-        save_pretrained(
-            model,
-            run_name=self.run_name,
-            config=self.cfg,
-            filename=f'weights_epoch_{epoch}.pt',
-        )
+    def _save(self, model, epoch, val_loss=None):
+        from omegaconf import OmegaConf
+        save_dir = Path(os.environ.get("SCRATCH", ".")) / "checkpoints" / self.run_name
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Always overwrite latest
+        torch.save(model.state_dict(), save_dir / "weights_latest.pt")
+
+        # Overwrite best only if val loss improved
+        best_loss_file = save_dir / "best_loss.txt"
+        best_loss = float("inf")
+        if best_loss_file.exists():
+            best_loss = float(best_loss_file.read_text())
+        if val_loss is not None and val_loss < best_loss:
+            torch.save(model.state_dict(), save_dir / "weights_best.pt")
+            best_loss_file.write_text(str(val_loss))
+            print(f"  New best checkpoint at epoch {epoch}: val_loss={val_loss:.4f}")
+
+        cfg_path = save_dir / "config.json"
+        if not cfg_path.exists():
+            cfg_path.write_text(json.dumps(OmegaConf.to_container(self.cfg, resolve=True), indent=2))

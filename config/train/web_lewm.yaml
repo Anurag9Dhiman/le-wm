@@ -11,32 +11,47 @@ num_workers: 4
 train_split: 0.9
 seed: 3072
 img_size: 224
-embed_dim: 384        # DINOv2-small CLS dim; also the projected embedding dim
-history_size: 5       # context frames fed to ARPredictor
-num_preds: 1          # predict 1 step ahead
+embed_dim: 384
+history_size: 5
+num_preds: 1
 
 trainer:
-  max_epochs: 3
+  max_epochs: 100
   devices: auto
   accelerator: gpu
-  precision: bf16
-  gradient_clip_val: 1.0
+  precision: bf16-mixed
+  gradient_clip_val: 0.5
+  accumulate_grad_batches: 4    # effective batch = batch_size × 4
 
 loader:
-  batch_size: 16
+  batch_size: 64
   num_workers: ${num_workers}
-  persistent_workers: false
-  prefetch_factor: 3
+  persistent_workers: true
+  prefetch_factor: 4
   pin_memory: true
 
 optimizer:
   type: AdamW
-  lr: 3e-4
+  lr: 3e-5
   weight_decay: 1e-3
 
+# Regularizer — set weight=0 to disable
+# sigreg: Sketched Isotropic Gaussian (default)
+# visreg: Variance-Isotropic-Shape (set sigreg.weight=0, visreg.weight=4.5)
 loss:
   sigreg:
-    weight: 0.09
+    weight: 0.05
     kwargs:
       knots: 17
       num_proj: 1024
+  visreg:
+    weight: 0.0
+    kwargs:
+      num_projections: 256
+
+wandb:
+  enabled: false
+  config:
+    entity: lewm
+    project: lewm
+    name: ${output_model_name}

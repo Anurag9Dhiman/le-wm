@@ -1,184 +1,221 @@
+# LeWM (Web)
+### A Visual Latent World Model for Web UI Navigation
 
-# LeWorldModel
-### Stable End-to-End Joint-Embedding Predictive Architecture from Pixels
+Built on [LeWorldModel](https://github.com/lucas-maes/le-wm) (JEPA + SIGReg/VISReg), extended to web UI interaction.
 
-[Lucas Maes*](https://x.com/lucasmaes_), [Quentin Le Lidec*](https://quentinll.github.io/), [Damien Scieur](https://scholar.google.com/citations?user=hNscQzgAAAAJ&hl=fr), [Yann LeCun](https://yann.lecun.com/) and [Randall Balestriero](https://randallbalestriero.github.io/)
+---
 
-**Abstract:** Joint Embedding Predictive Architectures (JEPAs) offer a compelling framework for learning world models in compact latent spaces, yet existing methods remain fragile, relying on complex multi-term losses, exponential moving averages, pretrained encoders, or auxiliary supervision to avoid representation collapse. In this work, we introduce LeWorldModel (LeWM), the first JEPA that trains stably end-to-end from raw pixels using only two loss terms: a next-embedding prediction loss and a regularizer enforcing Gaussian-distributed latent embeddings. This reduces tunable loss hyperparameters from six to one compared to the only existing end-to-end alternative. With ~15M parameters trainable on a single GPU in a few hours, LeWM plans up to 48× faster than foundation-model-based world models while remaining competitive across diverse 2D and 3D control tasks. Beyond control, we show that LeWM's latent space encodes meaningful physical structure through probing of physical quantities. Surprise evaluation confirms that the model reliably detects physically implausible events.
-
-<p align="center">
-   <b>[ <a href="https://arxiv.org/pdf/2603.19312v1">Paper</a> | <a href="https://huggingface.co/collections/quentinll/lewm">Checkpoints &amp; Data</a> | <a href="https://le-wm.github.io/">Website</a> ]</b>
-</p>
-
-<br>
-
-<p align="center">
-  <img src="assets/lewm.gif" width="80%">
-</p>
-
-If you find this code useful, please reference it in your paper:
-```
-@article{maes_lelidec2026lewm,
-  title={LeWorldModel: Stable End-to-End Joint-Embedding Predictive Architecture from Pixels},
-  author={Maes, Lucas and Le Lidec, Quentin and Scieur, Damien and LeCun, Yann and Balestriero, Randall},
-  journal={arXiv preprint},
-  year={2026}
-}
-```
-
-## Using the code
-This codebase builds on [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) for environment management, planning, and evaluation, and [stable-pretraining](https://github.com/galilai-group/stable-pretraining) for training. Together they reduce this repository to its core contribution: the model architecture and training objective.
-
-**Installation:**
-```bash
-uv venv --python=3.10
-source .venv/bin/activate
-uv pip install stable-worldmodel[train,env]
-```
-
-## Data
-
-Datasets use the HDF5 format for fast loading. Download the data from [HuggingFace](https://huggingface.co/collections/quentinll/lewm) and decompress with:
+## Quick Start
 
 ```bash
-tar --zstd -xvf archive.tar.zst
+# Train with SIGReg (default)
+python train.py --config-name web_lewm
+
+# Train with VISReg
+python train.py --config-name web_lewm \
+    loss.sigreg.weight=0.0 loss.visreg.weight=4.5 optimizer.lr=6e-5
 ```
 
-Place the extracted `.h5` files under `$STABLEWM_HOME` (defaults to `~/.stable-wm/`). You can override this path:
+---
+
+## Local Setup
+
+### Requirements
+- Python 3.11+
+- PyTorch 2.5+ with CUDA 12.4 (or CPU for testing)
+- Linux with CUDA 12.4+ (recommended)
+
+### 1. Clone the repo
+
 ```bash
-export STABLEWM_HOME=/path/to/your/storage
+git clone https://github.com/Anurag9Dhiman/le-wm.git
+cd le-wm
+git checkout anurag/web-lewm
 ```
 
-Dataset names are specified without the `.h5` extension. For example, `config/train/data/pusht.yaml` references `pusht_expert_train`, which resolves to `$STABLEWM_HOME/pusht_expert_train.h5`.
+### 2. Install dependencies
 
-## Training
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+pip install "stable-worldmodel[train]==0.0.6"
+pip install lancedb "pyarrow>=21.0.0" zstandard imageio huggingface_hub
+```
 
-`jepa.py` contains the PyTorch implementation of LeWM. Training is configured via [Hydra](https://hydra.cc/) config files under `config/train/`.
+Install `stable-pretraining` from source:
+```bash
+git clone https://github.com/Anurag9Dhiman/stable-pretraining.git
+pip install -e stable-pretraining
+```
 
-Before training, set your WandB `entity` and `project` in `config/train/lewm.yaml`:
+### 3. Get the dataset
+
+Download `openapps_all.lance` and set the path:
+```bash
+export LOCAL_DATASET_DIR=/path/to/datasets   # must contain openapps_all.lance
+```
+
+Or collect your own data (requires [OpenApps](https://github.com/taj-gillin/OpenApps) running):
+```bash
+python data/collect_open_apps.py \
+    --base-url http://localhost:5001 \
+    --apps todo calendar messenger \
+    --num-episodes 200 --episode-len 48 \
+    --output-dir datasets/
+```
+
+### 4. Train
+
+```bash
+# Smoke test (3 epochs, no dataset needed — uses mock data)
+python train.py --config-name web_lewm trainer.max_epochs=3
+
+# Full training — SIGReg
+python train.py --config-name web_lewm
+
+# Full training — VISReg
+python train.py --config-name web_lewm \
+    loss.sigreg.weight=0.0 loss.visreg.weight=4.5 optimizer.lr=6e-5
+```
+
+
+---
+
+## HPCE Setup (IITM Param Rudra)
+
+### 1. SSH and clone
+
+```bash
+ssh <username>@para.hpce.iitm.ac.in
+git clone https://github.com/Anurag9Dhiman/le-wm.git /scratch/$USER/le-wm
+cd /scratch/$USER/le-wm
+git checkout anurag/web-lewm
+```
+
+### 2. Run setup script
+
+Creates conda env with Python 3.11, installs all deps:
+```bash
+bash hpce/setup.sh
+```
+
+### 3. Upload dataset
+
+From your local machine:
+```bash
+rsync -avP /path/to/openapps_all.lance \
+    <username>@para.hpce.iitm.ac.in:/scratch/$USER/datasets/
+```
+
+### 4. Submit training jobs
+
+```bash
+cd /scratch/$USER/le-wm
+
+sbatch hpce/train.slurm          # SIGReg
+sbatch hpce/train_visreg.slurm   # VISReg
+```
+
+### 5. Monitor
+
+```bash
+squeue -u $USER
+tail -f /scratch/$USER/logs/lewm_web_<jobid>.log
+```
+
+Checkpoints saved to `/scratch/$USER/checkpoints/`:
+- `web_lewm/weights_best.pt` — SIGReg best
+- `web_lewm_visreg/weights_best.pt` — VISReg best
+
+---
+
+## Architecture
+
+| Component | Details |
+|-----------|---------|
+| Encoder | ViT-S/14, 384-dim, trained from scratch |
+| Action Encoder | WebActionEncoder — 8 action types, 20-dim input, char-level text |
+| Predictor | ARPredictor — causal autoregressive transformer, 5 context frames |
+| Regularizer | SIGReg (default) or VISReg (switchable via config) |
+
+**Action space** — 8 types: noop, click, type, scroll, navigate, hover, drag, key_press.
+Each action encoded as a 20-dim float vector: `[type, x, y, scroll_x, scroll_y, text×15]`.
+Text is character-level encoded (`ord(ch)/255.0`), zero-padded to 15 chars.
+
+**Encoder** — ViT-S/14 trained from scratch (no pretrained weights).
+Representations are tuned to web UI structure rather than natural images.
+
+---
+
+## Configuration
+
+All hyperparameters in `config/train/web_lewm.yaml`. Key settings:
+
 ```yaml
-wandb:
-  config:
-    entity: your_entity
-    project: your_project
+history_size: 5                    # context frames fed to predictor
+num_preds: 1                       # steps predicted ahead
+loader.batch_size: 64              # per-GPU batch
+trainer.accumulate_grad_batches: 4 # effective batch = 256
+optimizer.lr: 3e-5                 # tuned for A100 + effective batch 256
+trainer.precision: bf16-mixed      # requires Ampere GPU (A100, A10, etc.)
 ```
 
-To launch training:
+**Switch regularizer via CLI overrides:**
 ```bash
-python train.py data=pusht
+# SIGReg (default) — weight=0.05
+python train.py --config-name web_lewm
+
+# VISReg — weight=4.5, 2x higher LR
+python train.py --config-name web_lewm \
+    loss.sigreg.weight=0.0 \
+    loss.visreg.weight=4.5 \
+    optimizer.lr=6e-5
 ```
 
-Checkpoints are saved to `$STABLEWM_HOME` upon completion.
+---
 
-For baseline scripts, see the stable-worldmodel [scripts](https://github.com/galilai-group/stable-worldmodel/tree/main/scripts/train) folder.
+## Results (IITM Param Rudra, A100 80GB)
 
-## Planning
+| Regularizer | Best Val pred_loss | Epochs | Time |
+|-------------|-------------------|--------|------|
+| SIGReg | **0.0746** | 100 | ~3.5 hrs |
+| VISReg | 0.0829 | 100 | ~3.5 hrs |
 
-Evaluation configs live under `config/eval/`. Set the `policy` field to the checkpoint path **relative to `$STABLEWM_HOME`**, without the `_object.ckpt` suffix:
+Batch=64, gradient accumulation=4 (effective batch=256), lr=3e-5 (SIGReg) / 6e-5 (VISReg).
 
-```bash
-# ✓ correct
-python eval.py --config-name=pusht.yaml policy=pusht/lewm
+![Loss curves](assets/loss_curves.png)
 
-# ✗ incorrect
-python eval.py --config-name=pusht.yaml policy=pusht/lewm_object.ckpt
+---
+
+## Files
+
+```
+le-wm/
+├── train.py                      # training entry point
+├── module.py                     # JEPA, SIGReg, VISReg, WebActionEncoder, MLP
+├── utils.py                      # checkpoint callback, normalizers
+├── jepa.py                       # JEPA model
+├── data/
+│   ├── lance_dataset.py          # LanceDB dataset loader for OpenApps
+│   ├── collect_open_apps.py      # trajectory collection script
+│   └── web_action.py             # action space definitions (20-dim encoding)
+├── config/train/
+│   ├── web_lewm.yaml             # main training config
+│   ├── data/web.yaml             # dataset config
+│   └── model/web_lewm.yaml       # model architecture config
+└── hpce/
+    ├── setup.sh                  # cluster environment setup (conda, deps)
+    ├── train.slurm               # SIGReg SLURM job
+    └── train_visreg.slurm        # VISReg SLURM job
 ```
 
-## Pretrained Checkpoints
+---
 
-Pretrained LeWM checkpoints for each environment are mirrored on the Hugging Face
-Hub (model repos), alongside the datasets (dataset repos) in the same collection:
+## Differences from Base LeWM
 
-- [`quentinll/lewm-pusht`](https://huggingface.co/quentinll/lewm-pusht)
-- [`quentinll/lewm-cube`](https://huggingface.co/quentinll/lewm-cube)
-- [`quentinll/lewm-tworooms`](https://huggingface.co/quentinll/lewm-tworooms)
-- [`quentinll/lewm-reacher`](https://huggingface.co/quentinll/lewm-reacher)
-
-The full baseline checkpoint suite (PLDM, LeJEPA, IVL, IQL, GCBC, DINO-WM, DINO-WM-noprop)
-is available on [Google Drive](https://drive.google.com/drive/folders/1r31os0d4-rR0mdHc7OlY_e5nh3XT4r4e):
-
-<div align="center">
-
-| Method | two-room | pusht | cube | reacher |
-|:---:|:---:|:---:|:---:|:---:|
-| pldm | ✓ | ✓ | ✓ | ✓ |
-| lejepa | ✓ | ✓ | ✓ | ✓ |
-| ivl | ✓ | ✓ | ✓ | — |
-| iql | ✓ | ✓ | ✓ | — |
-| gcbc | ✓ | ✓ | ✓ | — |
-| dinowm | ✓ | ✓ | — | — |
-| dinowm_noprop | ✓ | ✓ | ✓ | ✓ |
-
-</div>
-
-## Loading a checkpoint
-
-### From the Drive archive
-
-Each tar archive contains two files per checkpoint:
-- `<name>_object.ckpt` — a serialized Python object for convenient loading; this is what `eval.py` and the `stable_worldmodel` API use
-- `<name>_weight.ckpt` — a weights-only checkpoint (`state_dict`) for cases where you want to load weights into your own model instance
-
-Place the extracted files under `$STABLEWM_HOME/` and load via:
-
-```python
-import stable_worldmodel as swm
-
-# Load the cost model (for MPC)
-cost = swm.policy.AutoCostModel('pusht/lewm')
-```
-
-`AutoCostModel` accepts:
-- `run_name` — checkpoint path **relative to `$STABLEWM_HOME`**, without the `_object.ckpt` suffix
-- `cache_dir` — optional override for the checkpoint root (defaults to `$STABLEWM_HOME`)
-
-The returned module is in `eval` mode with its PyTorch weights accessible via `.state_dict()`.
-
-### From the Hugging Face mirror
-
-The HF model repos ship the LeWM checkpoint as a `weights.pt` (state dict) plus a
-`config.json` describing the model. Convert once to produce the `_object.ckpt`
-that `eval.py` expects:
-
-```bash
-# download weights.pt + config.json
-hf download quentinll/lewm-pusht --local-dir $STABLEWM_HOME/hf_pusht
-
-# convert to object checkpoint under $STABLEWM_HOME/pusht/lewm_object.ckpt
-python - <<'PY'
-import json, torch, stable_pretraining as spt
-from pathlib import Path
-from jepa import JEPA
-from module import ARPredictor, Embedder, MLP
-import stable_worldmodel as swm
-
-src = Path(swm.data.utils.get_cache_dir(), "hf_pusht")
-out = Path(swm.data.utils.get_cache_dir(), "pusht", "lewm_object.ckpt")
-
-cfg = json.loads((src / "config.json").read_text())
-encoder = spt.backbone.utils.vit_hf(
-    cfg["encoder"]["size"],
-    patch_size=cfg["encoder"]["patch_size"],
-    image_size=cfg["encoder"]["image_size"],
-    pretrained=False, use_mask_token=False,
-)
-mlp = lambda k: MLP(input_dim=cfg[k]["input_dim"], output_dim=cfg[k]["output_dim"],
-                    hidden_dim=cfg[k]["hidden_dim"], norm_fn=torch.nn.BatchNorm1d)
-model = JEPA(
-    encoder=encoder,
-    predictor=ARPredictor(**cfg["predictor"]),
-    action_encoder=Embedder(**cfg["action_encoder"]),
-    projector=mlp("projector"),
-    pred_proj=mlp("pred_proj"),
-)
-sd = torch.load(src / "weights.pt", map_location="cpu", weights_only=False)
-model.load_state_dict(sd, strict=True)
-out.parent.mkdir(parents=True, exist_ok=True)
-torch.save(model, out)
-PY
-```
-
-After conversion, load via `swm.policy.AutoCostModel('pusht/lewm')` as usual.
-
-## Contact & Contributions
-Feel free to open [issues](https://github.com/lucas-maes/le-wm/issues)! For questions or collaborations, please contact `lucas.maes@mila.quebec`
+| Feature | Base LeWM | LeWM (Web) |
+|---------|-----------|------------|
+| Domain | 2D/3D control tasks | Web UI navigation |
+| Dataset | HDF5 (tworoom, pusht) | LanceDB (OpenApps) |
+| Action space | Continuous control | 8 web action types + text |
+| Regularizers | SIGReg | SIGReg + VISReg |
+| Cluster setup | venv + Python 3.10 | Conda + Python 3.11 |
